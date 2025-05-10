@@ -137,8 +137,9 @@ def read_landuse_data(tif_path, bounds):
             lat_step = 0.01
             
             lons = np.arange(bounds['lon_min'], bounds['lon_max'], lon_step)
-            lats = np.arange(bounds['lat_min'], bounds['lat_max'], lat_step)
-            
+            # lats = np.arange(bounds['lat_min'], bounds['lat_max'], lat_step)
+            lats = np.arange(bounds['lat_max'], bounds['lat_min'], -lat_step)
+
             # Initialize empty array
             landuse = np.zeros((len(lats), len(lons)), dtype=np.int32)
             
@@ -190,7 +191,7 @@ def create_elevation_landuse_composite(elevation, landuse, bounds):
         norm=elev_norm,
         extent=[bounds['lon_min'], bounds['lon_max'], bounds['lat_min'], bounds['lat_max']],
         aspect='auto',
-        origin='lower'
+        origin='upper'  # Changed from 'lower' to 'upper'
     )
     
     # Add colorbar for elevation
@@ -210,7 +211,7 @@ def create_elevation_landuse_composite(elevation, landuse, bounds):
             cmap=landuse_cmap,
             extent=[bounds['lon_min'], bounds['lon_max'], bounds['lat_min'], bounds['lat_max']],
             aspect='auto',
-            origin='lower',
+            origin='upper',
             vmin=0,
             vmax=20
         )
@@ -254,7 +255,7 @@ def create_elevation_landuse_composite(elevation, landuse, bounds):
             norm=elev_norm,
             extent=[bounds['lon_min'], bounds['lon_max'], bounds['lat_min'], bounds['lat_max']],
             aspect='auto',
-            origin='lower'
+            origin='upper'
         )
         
         # Overlay land use with transparency for important categories
@@ -285,7 +286,7 @@ def create_elevation_landuse_composite(elevation, landuse, bounds):
             cmap=landuse_cmap,
             extent=[bounds['lon_min'], bounds['lon_max'], bounds['lat_min'], bounds['lat_max']],
             aspect='auto',
-            origin='lower',
+            origin='upper',
             alpha=0.3,  # Transparency
             vmin=0,
             vmax=20
@@ -298,7 +299,7 @@ def create_elevation_landuse_composite(elevation, landuse, bounds):
             norm=elev_norm,
             extent=[bounds['lon_min'], bounds['lon_max'], bounds['lat_min'], bounds['lat_max']],
             aspect='auto',
-            origin='lower'
+            origin='upper'
         )
     
     ax3.set_title('Combined Terrain Analysis')
@@ -368,7 +369,7 @@ def visualize_forces_on_terrain(elevation, red_forces, blue_forces, timestamp=No
         norm=elev_norm,
         extent=[bounds['lon_min'], bounds['lon_max'], bounds['lat_min'], bounds['lat_max']],
         aspect='auto',
-        origin='lower'
+        origin='upper'
     )
     
     # Add colorbar
