@@ -18,7 +18,9 @@ import time
 
 import torch.serialization
 from sklearn.preprocessing import StandardScaler
-# Add StandardScaler to the safe globals list
+
+# Add StandardScaler and numpy scalar to the safe globals list
+torch.serialization.add_safe_globals([StandardScaler, np.core.multiarray.scalar])
 torch.serialization.add_safe_globals([StandardScaler])
 
 class PositionalEncoding(nn.Module):
@@ -1036,7 +1038,7 @@ class TargetMovementPredictor:
         
         try:
             # Load checkpoint
-            checkpoint = torch.load(filename, map_location=self.config['device'])
+            checkpoint = torch.load(filename, map_location=self.config['device'], weights_only=False)
             
             # Update config
             self.config.update(checkpoint['config'])
@@ -1652,10 +1654,9 @@ def visualize_out_of_view_prediction(
     
     return fig
 
-
 def create_prediction_animation(predictor, output_filename='target_prediction_animation.mp4'):
     """
-    Create animation of target predictions with terrain and blue forces.
+    Create animation of target predictions with correctly mapped terrain and blue forces.
     """
     import numpy as np
     import pandas as pd
@@ -1721,19 +1722,23 @@ def create_prediction_animation(predictor, output_filename='target_prediction_an
     confidence_ellipses = {}
     target_trails = {}
     
-    # Add terrain background (adjust extent to match coordinate system)
-    terrain_img = ax.imshow(terrain_map, cmap=terrain_cmap, alpha=0.5, 
-                          extent=[lon_min, lon_max, lat_min, lat_max], 
-                          aspect='auto', zorder=0)
+    # Add terrain background with proper extent and orientation
+    # The critical fix: correctly map the terrain to lat/lon with origin='upper'
+    # Note that we reverse lat_min and lat_max because imshow uses origin='upper'
+    terrain_img = ax.imshow(terrain_map, cmap=terrain_cmap, norm=norm, alpha=0.5, 
+                      extent=[lon_min, lon_max, lat_max, lat_min],
+                      aspect='auto', zorder=0, origin='upper')
     
     # Time display
     time_text = ax.text(0.02, 0.95, '', transform=ax.transAxes, fontsize=14,
                       bbox=dict(facecolor='white', alpha=0.8), zorder=20)
     
+    # Add title
+    ax.set_title('Nova Scotia Battlefield Visualization', fontsize=16)
+    
     # Set axis limits
     ax.set_xlim(lon_min, lon_max)
     ax.set_ylim(lat_min, lat_max)
-    ax.set_title('Target Movement Prediction')
     ax.set_xlabel('Longitude')
     ax.set_ylabel('Latitude')
     ax.legend(loc='upper right')
@@ -1750,7 +1755,9 @@ def create_prediction_animation(predictor, output_filename='target_prediction_an
     
     def update(frame_idx):
         # Get current timestamp
-        current_time = selected_frames[frame_idx]
+        current_time_np = selected_frames[frame_idx]
+        # Convert numpy.datetime64 to pandas Timestamp for strftime
+        current_time = pd.Timestamp(current_time_np)
         
         # Filter data for this timestamp
         current_red = red_df[red_df['datetime'] == current_time]
@@ -1765,7 +1772,7 @@ def create_prediction_animation(predictor, output_filename='target_prediction_an
         # Clean up previous predictions
         for target_id in list(prediction_lines.keys()):
             if prediction_lines[target_id] in ax.lines:
-                ax.lines.remove(prediction_lines[target_id])
+                prediction_lines[target_id].remove()
             del prediction_lines[target_id]
         
         for target_id in list(confidence_ellipses.keys()):
@@ -1777,12 +1784,23 @@ def create_prediction_animation(predictor, output_filename='target_prediction_an
         # Update target trails
         for target_id in list(target_trails.keys()):
             if target_trails[target_id] in ax.lines:
-                ax.lines.remove(target_trails[target_id])
+                target_trails[target_id].remove()
             del target_trails[target_id]
         
-        # Make predictions for each target
+        # Make predictions for each target and color by target class
         for _, row in current_red.iterrows():
             target_id = row['target_id']
+            target_class = row['target_class']
+            
+            # Choose color based on target class
+            if target_class == 'tank':
+                color = 'darkred'
+            elif target_class == 'armoured personnel carrier':
+                color = 'orangered'
+            elif target_class == 'light vehicle':
+                color = 'coral'
+            else:
+                color = 'red'
             
             # Get history data for this target
             target_history = red_df[(red_df['target_id'] == target_id) & 
@@ -1791,7 +1809,8 @@ def create_prediction_animation(predictor, output_filename='target_prediction_an
             # Update target trail
             target_points = target_history[['longitude', 'latitude']].values[-10:]
             if len(target_points) >= 2:
-                line, = ax.plot(target_points[:, 0], target_points[:, 1], 'r-', alpha=0.4, linewidth=1.5, zorder=5)
+                line, = ax.plot(target_points[:, 0], target_points[:, 1], '-', 
+                               color=color, alpha=0.4, linewidth=1.5, zorder=5)
                 target_trails[target_id] = line
             
             # Generate prediction if enough history
@@ -1849,7 +1868,8 @@ def create_prediction_animation(predictor, output_filename='target_prediction_an
                 upper_ci = predictions['upper_ci']
                 
                 # Plot predicted trajectory
-                line, = ax.plot(mean_traj[:, 0], mean_traj[:, 1], 'r--', linewidth=2, alpha=0.8, zorder=6)
+                line, = ax.plot(mean_traj[:, 0], mean_traj[:, 1], '--', 
+                               color=color, linewidth=2, alpha=0.8, zorder=6)
                 prediction_lines[target_id] = line
                 
                 # Plot confidence ellipses
@@ -1859,7 +1879,7 @@ def create_prediction_animation(predictor, output_filename='target_prediction_an
                         (mean_traj[i, 0], mean_traj[i, 1]),
                         width=upper_ci[i, 0] - lower_ci[i, 0],
                         height=upper_ci[i, 1] - lower_ci[i, 1],
-                        color='red', alpha=0.2, zorder=4
+                        color=color, alpha=0.2, zorder=4
                     )
                     ax.add_patch(ellipse)
                     confidence_ellipses[target_id].append(ellipse)
@@ -1900,55 +1920,855 @@ def create_prediction_animation(predictor, output_filename='target_prediction_an
     print(f"Animation saved to {output_filename}")
     return ani
 
-# Main execution
-if __name__ == "__main__":
-    # Example configuration
-    config = {
-        'hidden_dim': 128,
-        'n_layers': 3,
-        'n_heads': 4,
-        'dropout': 0.1,
-        'learning_rate': 1e-4,
-        'batch_size': 32,
-        'num_epochs': 50,  # Reduce for faster training during development
-        'sequence_length': 10,
-        'prediction_horizon': 5,
-        'terrain_feature_dim': 32,
-        'use_terrain': True,
-        'device': 'cuda' if torch.cuda.is_available() else 'cpu'
-    }
+def visualize_target_prediction_with_terrain(
+    predictor, 
+    target_data, 
+    target_id, 
+    timestamp,
+    prediction_duration=300,
+    terrain_data=None,
+    blue_force_data=None,
+    output_path=None,
+    show_confidence=True
+):
+    """
+    Enhanced visualization function that properly displays target prediction with terrain data.
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import ListedColormap
+    import pandas as pd
+    import numpy as np
+    from matplotlib.patches import Patch
     
-    # Train model
-    predictor = run_training_pipeline(config=config)
+    # Convert timestamp to datetime if it's a string
+    if isinstance(timestamp, str):
+        timestamp = pd.to_datetime(timestamp)
     
-    # Example of predicting a target when it goes out of view
-    data = load_and_process_data()
+    # Make prediction
+    prediction = predictor.predict_out_of_view(
+        target_data, 
+        target_id, 
+        timestamp,
+        prediction_duration
+    )
+    
+    if prediction is None:
+        print(f"Could not generate prediction for target {target_id}")
+        return None
+    
+    # Create figure with two subplots - one for prediction, one for terrain analysis
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 8))
+    
+    # Get coordinate bounds for the prediction
+    mean_traj = prediction['mean']
+    lon_min, lon_max = mean_traj[:, 0].min() - 0.05, mean_traj[:, 0].max() + 0.05
+    lat_min, lat_max = mean_traj[:, 1].min() - 0.05, mean_traj[:, 1].max() + 0.05
+    
+    # 1. Plot prediction on the first subplot
+    # Filter data for this target
+    target_df = target_data[target_data['target_id'] == target_id].copy()
+    if 'datetime' in target_df.columns and target_df['datetime'].dtype == object:
+        target_df['datetime'] = pd.to_datetime(target_df['datetime'])
+    
+    # Get history leading up to timestamp
+    history = target_df[target_df['datetime'] <= timestamp]
+    
+    # Get target class for styling
+    target_class = target_df['target_class'].iloc[0] if 'target_class' in target_df.columns else 'Unknown'
+    
+    # Choose color based on target class
+    if target_class == 'tank':
+        color = 'darkred'
+    elif target_class == 'armoured personnel carrier':
+        color = 'orangered'
+    elif target_class == 'light vehicle':
+        color = 'coral'
+    else:
+        color = 'red'
+    
+    # Plot history trajectory
+    ax1.plot(history['longitude'], history['latitude'], 'b-', label='Past Trajectory')
+    ax1.scatter(history['longitude'].iloc[-1], history['latitude'].iloc[-1], 
+              c='blue', s=100, marker='o', label='Last Seen Position')
+    
+    # Plot predicted trajectory
+    lower_ci = prediction['lower_ci']
+    upper_ci = prediction['upper_ci']
+    time_points = prediction['time_points']
+    
+    ax1.plot(mean_traj[:, 0], mean_traj[:, 1], '-', color=color, linewidth=2.5,
+             label=f'Predicted {target_class} Trajectory')
+    ax1.scatter(mean_traj[-1, 0], mean_traj[-1, 1], 
+              c=color, s=100, marker='x', label='Predicted Final Position')
+    
+    # Plot confidence intervals
+    if show_confidence:
+        for i in range(len(mean_traj)):
+            ellipse = plt.matplotlib.patches.Ellipse(
+                (mean_traj[i, 0], mean_traj[i, 1]),
+                width=upper_ci[i, 0] - lower_ci[i, 0],
+                height=upper_ci[i, 1] - lower_ci[i, 1],
+                color=color, alpha=0.2
+            )
+            ax1.add_patch(ellipse)
+    
+    # Check for actual future data to validate prediction
+    future = target_df[(target_df['datetime'] > timestamp) & 
+                      (target_df['datetime'] <= time_points[-1])]
+    
+    if len(future) > 0:
+        ax1.plot(future['longitude'], future['latitude'], 'g-', 
+                label='Actual Future Trajectory')
+        ax1.scatter(future['longitude'].iloc[-1], future['latitude'].iloc[-1],
+                  c='green', s=100, marker='*', label='Actual Final Position')
+    
+    # Add time labels to predicted points
+    for i, (x, y, t) in enumerate(zip(mean_traj[:, 0], mean_traj[:, 1], time_points)):
+        if i % 2 == 0 or i == len(mean_traj) - 1:
+            ax1.annotate(t.strftime('%H:%M:%S'), 
+                      (x, y), 
+                      textcoords="offset points", 
+                      xytext=(0, 10), 
+                      ha='center')
+    
+    # Set title and labels
+    ax1.set_title(f'Target {target_id} ({target_class}) Prediction')
+    ax1.set_xlabel('Longitude')
+    ax1.set_ylabel('Latitude')
+    ax1.legend()
+    ax1.grid(True)
+    ax1.set_xlim(lon_min, lon_max)
+    ax1.set_ylim(lat_min, lat_max)
+    
+    # 2. Plot terrain analysis on the second subplot
+    if terrain_data is not None:
+        # Define colors for each land use category from the LandUseCategory enum
+        land_use_colors = [
+            '#FFFFFF',  # 0: No data or out of bounds
+            '#1A5BAB',  # 1: Broadleaf Evergreen Forest - dark blue-green
+            '#358221',  # 2: Broadleaf Deciduous Forest - green
+            '#2E8B57',  # 3: Needleleaf Evergreen Forest - sea green
+            '#52A72D',  # 4: Needleleaf Deciduous Forest - light green
+            '#76B349',  # 5: Mixed Forest - medium green
+            '#90EE90',  # 6: Tree Open - light green
+            '#D2B48C',  # 7: Shrub - tan
+            '#9ACD32',  # 8: Herbaceous - yellow-green
+            '#ADFF2F',  # 9: Herbaceous with Sparse Tree/Shrub - green-yellow
+            '#F5DEB3',  # 10: Sparse vegetation - wheat
+            '#FFD700',  # 11: Cropland - gold
+            '#F4A460',  # 12: Paddy field - sandy brown
+            '#DAA520',  # 13: Cropland / Other Vegetation Mosaic - goldenrod
+            '#2F4F4F',  # 14: Mangrove - dark slate gray
+            '#00FFFF',  # 15: Wetland - cyan
+            '#A0522D',  # 16: Bare area, consolidated (gravel, rock) - sienna
+            '#DEB887',  # 17: Bare area, unconsolidated (sand) - burlywood
+            '#808080',  # 18: Urban - gray
+            '#FFFFFF',  # 19: Snow / Ice - white
+            '#0000FF',  # 20: Water bodies - blue
+        ]
+
+        terrain_cmap = ListedColormap(land_use_colors)
+
+        # Add normalization for the correct range (0-20)
+        import matplotlib.colors as mcolors
+        norm = mcolors.Normalize(0, 20)
+        # Get the full extent of the target data for the terrain map
+        full_lon_min, full_lon_max = target_data['longitude'].min(), target_data['longitude'].max()
+        full_lat_min, full_lat_max = target_data['latitude'].min(), target_data['latitude'].max()
+        
+        # Plot terrain - note the use of origin='upper' and reversed lat_min/lat_max
+        im = ax2.imshow(terrain_data, cmap=terrain_cmap, 
+                      extent=[full_lon_min, full_lon_max, full_lat_max, full_lat_min],
+                      aspect='auto', origin='upper', alpha=0.7)
+        
+        # Plot the trajectory on terrain
+        ax2.plot(history['longitude'], history['latitude'], 'b-', linewidth=2)
+        ax2.plot(mean_traj[:, 0], mean_traj[:, 1], '--', color=color, linewidth=2)
+        
+        # Show the prediction area as a rectangle on the terrain map
+        rect = plt.Rectangle((lon_min, lat_min), lon_max-lon_min, lat_max-lat_min, 
+                           fill=False, edgecolor='black', linestyle='--', linewidth=2)
+        ax2.add_patch(rect)
+        
+        # Add markers for start and end points
+        ax2.scatter(history['longitude'].iloc[-1], history['latitude'].iloc[-1], 
+                  c='blue', s=100, marker='o')
+        ax2.scatter(mean_traj[-1, 0], mean_traj[-1, 1], 
+                  c=color, s=100, marker='x')
+        
+        # Add legend for terrain types
+        legend_elements = [
+            Patch(facecolor='blue', label='Water'),
+            Patch(facecolor='gray', label='Urban'),
+            Patch(facecolor='yellow', label='Agricultural'),
+            Patch(facecolor='darkgreen', label='Forest'),
+            Patch(facecolor='lightgreen', label='Grassland'),
+            Patch(facecolor='brown', label='Barren'),
+            Patch(facecolor='cyan', label='Wetland'),
+            Patch(facecolor='white', label='Snow/Ice')
+        ]
+        ax2.legend(handles=legend_elements, loc='upper right')
+        
+        ax2.set_title('Terrain Analysis')
+        ax2.set_xlabel('Longitude')
+        ax2.set_ylabel('Latitude')
+    
+    plt.tight_layout()
+    
+    # Save figure if path provided
+    if output_path is not None:
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    
+    return fig
+
+def visualize_all_targets_predictions(
+    predictor, 
+    target_data, 
+    timestamp,
+    prediction_duration=300,
+    terrain_data=None,
+    blue_force_data=None,
+    output_path=None,
+    use_different_colors=True
+):
+    """
+    Visualize predictions for all targets on the global terrain map.
+    
+    Args:
+        predictor: Trained TargetMovementPredictor model
+        target_data: DataFrame with target observations
+        timestamp: Time to make predictions from
+        prediction_duration: How long to predict ahead (seconds or timedelta)
+        terrain_data: Terrain map (optional)
+        blue_force_data: Blue force locations (optional)
+        output_path: Path to save visualization (optional)
+        use_different_colors: Whether to use different colors for different targets
+        
+    Returns:
+        Matplotlib figure
+    """
+    # Ensure timestamp is datetime object
+    if isinstance(timestamp, str):
+        timestamp = pd.to_datetime(timestamp)
+    
+    # Create figure
+    fig, ax = plt.subplots(figsize=(15, 12))
+    
+    # Get coordinate bounds for the map
+    lon_min, lon_max = target_data['longitude'].min(), target_data['longitude'].max()
+    lat_min, lat_max = target_data['latitude'].min(), target_data['latitude'].max()
+    
+    # Add padding
+    lon_padding = (lon_max - lon_min) * 0.05
+    lat_padding = (lat_max - lat_min) * 0.05
+    lon_min -= lon_padding
+    lon_max += lon_padding
+    lat_min -= lat_padding
+    lat_max += lat_padding
+    
+    # Load and plot terrain data if available
+    if terrain_data is not None or os.path.exists("adapted_data/terrain_map.npy"):
+        if terrain_data is None:
+            terrain_data = np.load("adapted_data/terrain_map.npy")
+        
+            # Define colors for each land use category from the LandUseCategory enum
+            land_use_colors = [
+                '#FFFFFF',  # 0: No data or out of bounds
+                '#1A5BAB',  # 1: Broadleaf Evergreen Forest - dark blue-green
+                '#358221',  # 2: Broadleaf Deciduous Forest - green
+                '#2E8B57',  # 3: Needleleaf Evergreen Forest - sea green
+                '#52A72D',  # 4: Needleleaf Deciduous Forest - light green
+                '#76B349',  # 5: Mixed Forest - medium green
+                '#90EE90',  # 6: Tree Open - light green
+                '#D2B48C',  # 7: Shrub - tan
+                '#9ACD32',  # 8: Herbaceous - yellow-green
+                '#ADFF2F',  # 9: Herbaceous with Sparse Tree/Shrub - green-yellow
+                '#F5DEB3',  # 10: Sparse vegetation - wheat
+                '#FFD700',  # 11: Cropland - gold
+                '#F4A460',  # 12: Paddy field - sandy brown
+                '#DAA520',  # 13: Cropland / Other Vegetation Mosaic - goldenrod
+                '#2F4F4F',  # 14: Mangrove - dark slate gray
+                '#00FFFF',  # 15: Wetland - cyan
+                '#A0522D',  # 16: Bare area, consolidated (gravel, rock) - sienna
+                '#DEB887',  # 17: Bare area, unconsolidated (sand) - burlywood
+                '#808080',  # 18: Urban - gray
+                '#FFFFFF',  # 19: Snow / Ice - white
+                '#0000FF',  # 20: Water bodies - blue
+            ]
+
+            terrain_cmap = ListedColormap(land_use_colors)
+
+            # Add normalization for the correct range (0-20)
+            import matplotlib.colors as mcolors
+            norm = mcolors.Normalize(0, 20)
+        
+        # Plot terrain
+        ax.imshow(terrain_data, cmap=terrain_cmap, alpha=0.5, 
+                  extent=[lon_min, lon_max, lat_min, lat_max], 
+                  aspect='auto', zorder=0)
+    
+    # Plot blue force positions if available
+    if blue_force_data is not None:
+        ax.scatter(blue_force_data['longitude'], blue_force_data['latitude'],
+                  c='blue', s=100, marker='^', label='Blue Forces', zorder=10, edgecolor='black')
+    
+    # Generate color map for targets if using different colors
+    unique_targets = target_data['target_id'].unique()
+    num_targets = len(unique_targets)
+    
+    if use_different_colors:
+        # Create a colormap for different targets
+        target_colors = plt.cm.rainbow(np.linspace(0, 1, num_targets))
+        target_color_map = {target_id: target_colors[i] for i, target_id in enumerate(unique_targets)}
+    else:
+        # Use red for all targets
+        target_color_map = {target_id: 'red' for target_id in unique_targets}
+    
+    # Add a legend entry for predictions
+    legend_handles = []
+    if blue_force_data is not None:
+        legend_handles.append(plt.Line2D([0], [0], marker='^', color='w', markerfacecolor='blue', 
+                                        markersize=10, label='Blue Forces'))
+    
+    # Track whether we've added legend entries for target types
+    added_target_types = set()
+    
+    # Counter for successful predictions
+    successful_predictions = 0
+    
+    # Process each target
+    for target_id in tqdm(unique_targets, desc="Generating predictions"):
+        # Filter data for this target
+        target_df = target_data[target_data['target_id'] == target_id]
+        
+        # Skip if no data before timestamp
+        if target_df[target_df['datetime'] <= timestamp].empty:
+            continue
+        
+        # Get target class if available
+        target_class = target_df['target_class'].iloc[0] if 'target_class' in target_df.columns else 'Unknown'
+        
+        # Make prediction
+        prediction = predictor.predict_out_of_view(
+            target_data, 
+            target_id, 
+            timestamp,
+            prediction_duration
+        )
+        
+        if prediction is None:
+            continue
+        
+        successful_predictions += 1
+        
+        # Get the color for this target
+        color = target_color_map[target_id]
+        
+        # Filter history for this target
+        history = target_df[target_df['datetime'] <= timestamp]
+        
+        # Plot history trajectory as a thin line
+        ax.plot(history['longitude'], history['latitude'], '-', color=color, 
+                alpha=0.3, linewidth=1, zorder=3)
+        
+        # Plot last known position
+        ax.scatter(history['longitude'].iloc[-1], history['latitude'].iloc[-1], 
+                  color=color, s=50, marker='o', zorder=5)
+        
+        # Plot predicted trajectory
+        mean_traj = prediction['mean']
+        lower_ci = prediction['lower_ci']
+        upper_ci = prediction['upper_ci']
+        
+        ax.plot(mean_traj[:, 0], mean_traj[:, 1], '--', color=color, 
+                linewidth=2, alpha=0.8, zorder=4)
+        
+        # Plot final predicted position
+        ax.scatter(mean_traj[-1, 0], mean_traj[-1, 1], color=color, 
+                  s=80, marker='x', zorder=5, edgecolor='black')
+        
+        # Add target ID label at the end of prediction
+        ax.annotate(f"ID: {target_id}", 
+                   (mean_traj[-1, 0], mean_traj[-1, 1]), 
+                   textcoords="offset points", 
+                   xytext=(5, 5), 
+                   fontsize=8,
+                   color=color)
+        
+        # Add confidence ellipse for the final prediction
+        ellipse = plt.matplotlib.patches.Ellipse(
+            (mean_traj[-1, 0], mean_traj[-1, 1]),
+            width=upper_ci[-1, 0] - lower_ci[-1, 0],
+            height=upper_ci[-1, 1] - lower_ci[-1, 1],
+            color=color, alpha=0.2, zorder=2
+        )
+        ax.add_patch(ellipse)
+        
+        # Add to legend if not already added for this target type
+        if target_class not in added_target_types:
+            legend_handles.append(plt.Line2D([0], [0], color=color, lw=2, linestyle='--',
+                                           marker='x', markeredgecolor='black',
+                                           label=f'{target_class} Target'))
+            added_target_types.add(target_class)
+    
+    # Set title and labels
+    ax.set_title(f'All Target Predictions at {timestamp}\nPrediction Duration: {prediction_duration} seconds', 
+                fontsize=14)
+    ax.set_xlabel('Longitude', fontsize=12)
+    ax.set_ylabel('Latitude', fontsize=12)
+    
+    # Set axis limits
+    ax.set_xlim(lon_min, lon_max)
+    ax.set_ylim(lat_min, lat_max)
+    
+    # Add legend
+    if legend_handles:
+        ax.legend(handles=legend_handles, loc='upper right', fontsize=10)
+    
+    # Add grid
+    ax.grid(True, alpha=0.3)
+    
+    # Add info text
+    info_text = (
+        f"Timestamp: {timestamp}\n"
+        f"Prediction duration: {prediction_duration} seconds\n"
+        f"Targets with predictions: {successful_predictions} of {num_targets}\n"
+        f"95% confidence ellipses shown"
+    )
+    ax.text(0.02, 0.02, info_text, transform=ax.transAxes, 
+           bbox=dict(facecolor='white', alpha=0.7), fontsize=10)
+    
+    plt.tight_layout()
+    
+    # Save figure if path provided
+    if output_path is not None:
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        print(f"Visualization saved to {output_path}")
+    
+    return fig
+
+def main():
+    """
+    Main entry point with improved structure for training, validation, inference, and test set prediction.
+    """
+    import argparse
+    import os
+    import torch
+    import matplotlib.pyplot as plt
+    import pandas as pd
+    
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Target Movement Prediction')
+    parser.add_argument('--mode', type=str, required=True, 
+                        choices=['train', 'eval', 'infer', 'visualize', 'test'],
+                        help='Mode to run: train, eval, infer, visualize, or test')
+    parser.add_argument('--config_path', type=str, default='config/default_config.json',
+                        help='Path to configuration JSON file')
+    parser.add_argument('--data_dir', type=str, default='data',
+                        help='Directory containing data files')
+    parser.add_argument('--terrain_path', type=str, default='adapted_data/terrain_map.npy',
+                        help='Path to terrain data')
+    parser.add_argument('--elevation_path', type=str, default='adapted_data/elevation_map.npy',
+                        help='Path to elevation data')
+    parser.add_argument('--model_path', type=str, default='models/target_prediction/target_predictor_model.pt',
+                        help='Path to save/load model')
+    parser.add_argument('--output_dir', type=str, default='output',
+                        help='Directory to save outputs')
+    parser.add_argument('--target_id', type=str, default=None,
+                        help='Target ID for inference/visualization (optional)')
+    parser.add_argument('--timestamp', type=str, default=None,
+                        help='Timestamp for inference (optional)')
+    parser.add_argument('--prediction_duration', type=int, default=300,
+                        help='Duration to predict ahead in seconds')
+    parser.add_argument('--create_animation', action='store_true',
+                        help='Create animation of predictions')
+    parser.add_argument('--test_data', type=str, default=None,
+                        help='Path to test data file (for test mode)')
+    parser.add_argument('--test_output', type=str, default='test_predictions.csv',
+                        help='Path to save test predictions')
+    
+    args = parser.parse_args()
+    
+    # Create output directory if it doesn't exist
+    os.makedirs(args.output_dir, exist_ok=True)
+    
+    # Load configuration
+    if os.path.exists(args.config_path):
+        with open(args.config_path, 'r') as f:
+            import json
+            config = json.load(f)
+        print(f"Loaded configuration from {args.config_path}")
+    else:
+        # Default configuration
+        config = {
+            'hidden_dim': 128,
+            'n_layers': 3,
+            'n_heads': 4,
+            'dropout': 0.1,
+            'learning_rate': 1e-4,
+            'batch_size': 32,
+            'num_epochs': 50,
+            'sequence_length': 10,
+            'prediction_horizon': 5,
+            'terrain_feature_dim': 32,
+            'use_terrain': True,
+            'device': 'cuda' if torch.cuda.is_available() else 'cpu'
+        }
+        print("Using default configuration")
+    
+    # Load data
+    data = load_and_process_data(
+        target_csv=os.path.join(args.data_dir, "red_sightings.csv"),
+        blue_csv=os.path.join(args.data_dir, "blue_locations.csv"),
+        terrain_path=args.terrain_path,
+        elevation_path=args.elevation_path
+    )
+    
     target_data = data['target_data']
     blue_force_data = data['blue_force_data']
+    terrain_data = data['terrain_data']
+    elevation_data = data['elevation_data']
     
-    # Get a sample target ID
-    target_id = target_data['target_id'].unique()[0]
-    
-    # Get a sample timestamp about halfway through the data
-    target_times = target_data[target_data['target_id'] == target_id]['datetime']
-    mid_idx = len(target_times) // 2
-    last_seen_time = sorted(target_times)[mid_idx]
-    
-    # Visualize prediction
-    visualize_out_of_view_prediction(
-        predictor,
-        target_data,
-        target_id,
-        last_seen_time,
-        prediction_duration=300,  # 5 minutes
-        blue_force_data=blue_force_data,
-        output_path='prediction_visualization.png'
+    # Initialize predictor
+    predictor = TargetMovementPredictor(
+        config=config,
+        terrain_data_path=args.terrain_path,
+        elevation_data_path=args.elevation_path
     )
     
-    print("Prediction visualization saved to prediction_visualization.png")
+    # Execute the selected mode
+    if args.mode == 'train':
+        # Train mode
+        train_loader, val_loader = predictor.prepare_data(target_data, blue_force_data)
+        
+        # Train model
+        history = predictor.train(train_loader, val_loader)
+        
+        # Save training history plot
+        predictor.visualize_training_history(
+            history,
+            save_path=os.path.join(args.output_dir, "training_history.png")
+        )
+        
+        # Evaluate on validation set
+        metrics = predictor.evaluate(val_loader)
+        print("\nValidation Metrics:")
+        for key, value in metrics.items():
+            if key != 'errors_by_step':
+                print(f"  {key}: {value}")
+        
+        # Plot errors by prediction step
+        plt.figure(figsize=(10, 6))
+        plt.plot(range(1, len(metrics['errors_by_step']) + 1), metrics['errors_by_step'], 'o-')
+        plt.title('RMSE by Prediction Step')
+        plt.xlabel('Prediction Step')
+        plt.ylabel('RMSE')
+        plt.grid(True)
+        plt.savefig(os.path.join(args.output_dir, "errors_by_step.png"), dpi=300)
+        
+        # Save model
+        predictor.save_model(args.model_path)
+        print(f"Model saved to {args.model_path}")
+        
+    elif args.mode == 'eval':
+        # Evaluation mode
+        # Load model
+        if not predictor.load_model(args.model_path):
+            print(f"Error: Could not load model from {args.model_path}")
+            return
+        
+        # Prepare data
+        _, val_loader = predictor.prepare_data(target_data, blue_force_data)
+        
+        # Evaluate
+        metrics = predictor.evaluate(val_loader)
+        print("\nEvaluation Metrics:")
+        for key, value in metrics.items():
+            if key != 'errors_by_step':
+                print(f"  {key}: {value}")
+        
+        # Visualize sample predictions
+        for i, batch in enumerate(val_loader):
+            if i >= 3:  # Show 3 examples
+                break
+                
+            inputs = batch['input']
+            targets = batch['target']
+            terrain = batch['terrain'] if 'terrain' in batch else None
+            
+            predictor.visualize_predictions(
+                inputs, targets, terrain,
+                title=f"Target {batch['target_id'][0]} Predictions",
+                save_path=os.path.join(args.output_dir, f"prediction_sample_{i}.png")
+            )
+        
+    elif args.mode == 'infer':
+        # Inference mode
+        # Load model
+        if not predictor.load_model(args.model_path):
+            print(f"Error: Could not load model from {args.model_path}")
+            return
+        
+        # Parse timestamp if provided
+        timestamp = None
+        if args.timestamp:
+            timestamp = pd.to_datetime(args.timestamp)
+        else:
+            # Use a timestamp from the middle of the dataset
+            timestamps = sorted(target_data['datetime'].unique())
+            mid_idx = len(timestamps) // 2
+            timestamp = timestamps[mid_idx]
+        
+        print(f"Using timestamp: {timestamp}")
+        
+        if args.target_id:
+            # Predict for a specific target
+            target_id = args.target_id
+            
+            # Make prediction
+            prediction = predictor.predict_out_of_view(
+                target_data, 
+                target_id, 
+                timestamp,
+                args.prediction_duration
+            )
+            
+            if prediction is None:
+                print(f"Could not generate prediction for target {target_id}")
+                return
+            
+            # Standard visualization
+            visualize_out_of_view_prediction(
+                predictor,
+                target_data,
+                target_id,
+                timestamp,
+                prediction_duration=args.prediction_duration,
+                blue_force_data=blue_force_data,
+                output_path=os.path.join(args.output_dir, f"prediction_{target_id}.png")
+            )
+            
+            # Enhanced visualization with terrain
+            visualize_target_prediction_with_terrain(
+                predictor,
+                target_data,
+                target_id,
+                timestamp,
+                prediction_duration=args.prediction_duration,
+                terrain_data=terrain_data,
+                blue_force_data=blue_force_data,
+                output_path=os.path.join(args.output_dir, f"prediction_terrain_{target_id}.png")
+            )
+            
+            print(f"Prediction visualizations saved to {args.output_dir}")
+        else:
+            # Predict for all targets
+            visualize_all_targets_predictions(
+                predictor,
+                target_data,
+                timestamp,
+                prediction_duration=args.prediction_duration,
+                terrain_data=terrain_data,
+                blue_force_data=blue_force_data,
+                output_path=os.path.join(args.output_dir, "all_targets_prediction.png"),
+                use_different_colors=True
+            )
+            
+            print(f"All targets prediction saved to {os.path.join(args.output_dir, 'all_targets_prediction.png')}")
+        
+        # Create animation if requested
+        if args.create_animation:
+            create_prediction_animation(
+                predictor,
+                output_filename=os.path.join(args.output_dir, "target_prediction_animation.mp4")
+            )
+            
+    elif args.mode == 'visualize':
+        # Visualization mode (just for terrain/elevation data)
+        import matplotlib.pyplot as plt
+        from matplotlib.colors import ListedColormap
+        
+        if terrain_data is not None:
+            # Create terrain colormap
+            # Define colors for each land use category from the LandUseCategory enum
+            land_use_colors = [
+                '#FFFFFF',  # 0: No data or out of bounds
+                '#1A5BAB',  # 1: Broadleaf Evergreen Forest - dark blue-green
+                '#358221',  # 2: Broadleaf Deciduous Forest - green
+                '#2E8B57',  # 3: Needleleaf Evergreen Forest - sea green
+                '#52A72D',  # 4: Needleleaf Deciduous Forest - light green
+                '#76B349',  # 5: Mixed Forest - medium green
+                '#90EE90',  # 6: Tree Open - light green
+                '#D2B48C',  # 7: Shrub - tan
+                '#9ACD32',  # 8: Herbaceous - yellow-green
+                '#ADFF2F',  # 9: Herbaceous with Sparse Tree/Shrub - green-yellow
+                '#F5DEB3',  # 10: Sparse vegetation - wheat
+                '#FFD700',  # 11: Cropland - gold
+                '#F4A460',  # 12: Paddy field - sandy brown
+                '#DAA520',  # 13: Cropland / Other Vegetation Mosaic - goldenrod
+                '#2F4F4F',  # 14: Mangrove - dark slate gray
+                '#00FFFF',  # 15: Wetland - cyan
+                '#A0522D',  # 16: Bare area, consolidated (gravel, rock) - sienna
+                '#DEB887',  # 17: Bare area, unconsolidated (sand) - burlywood
+                '#808080',  # 18: Urban - gray
+                '#FFFFFF',  # 19: Snow / Ice - white
+                '#0000FF',  # 20: Water bodies - blue
+            ]
 
-    # Create animation
-    create_prediction_animation(
-        predictor,
-        output_filename='target_prediction_animation.mp4'
-    )
+            terrain_cmap = ListedColormap(land_use_colors)
+
+            # Add normalization for the correct range (0-20)
+            import matplotlib.colors as mcolors
+            norm = mcolors.Normalize(0, 20)
+            
+            # Visualize terrain
+            plt.figure(figsize=(12, 10))
+            plt.imshow(terrain_data, cmap=terrain_cmap, origin='upper')
+            plt.colorbar(ticks=range(8), label='Terrain Type')
+            plt.title('Terrain Map')
+            plt.savefig(os.path.join(args.output_dir, "terrain_map.png"), dpi=300)
+            
+        if elevation_data is not None:
+            # Visualize elevation
+            plt.figure(figsize=(12, 10))
+            plt.imshow(elevation_data, cmap='terrain', origin='upper')
+            plt.colorbar(label='Elevation (m)')
+            plt.title('Elevation Map')
+            plt.savefig(os.path.join(args.output_dir, "elevation_map.png"), dpi=300)
+            
+        # Display target and blue force positions
+        plt.figure(figsize=(12, 10))
+        
+        # Get coordinate bounds
+        lon_min, lon_max = target_data['longitude'].min(), target_data['longitude'].max()
+        lat_min, lat_max = target_data['latitude'].min(), target_data['latitude'].max()
+        
+        # Plot terrain with correct extent
+        if terrain_data is not None:
+            plt.imshow(terrain_data, cmap=terrain_cmap, alpha=0.5,
+                      extent=[lon_min, lon_max, lat_max, lat_min],
+                      aspect='auto', origin='upper')
+        
+        # Plot targets
+        plt.scatter(target_data['longitude'], target_data['latitude'],
+                  c='red', s=50, marker='o', label='Red Forces', alpha=0.6)
+        
+        # Plot blue forces
+        plt.scatter(blue_force_data['longitude'], blue_force_data['latitude'],
+                  c='blue', s=80, marker='^', label='Blue Forces')
+        
+        plt.title('Target and Blue Force Positions')
+        plt.xlabel('Longitude')
+        plt.ylabel('Latitude')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.savefig(os.path.join(args.output_dir, "positions_map.png"), dpi=300)
+        
+        print(f"Visualizations saved to {args.output_dir}")
+        
+    elif args.mode == 'test':
+        # Test mode - process the test set
+        if args.test_data is None:
+            print("Error: Test data path is required for test mode")
+            return
+            
+        # Load model
+        if not predictor.load_model(args.model_path):
+            print(f"Error: Could not load model from {args.model_path}")
+            return
+        
+        # Run inference on test set
+        predict_test_set(
+            predictor, 
+            args.test_data, 
+            os.path.join(args.output_dir, args.test_output),
+            prediction_duration=args.prediction_duration
+        )
+
+def predict_test_set(predictor, test_data_path, output_path, prediction_duration=300):
+    """
+    Run inference on a test set and save predictions to a file.
+    
+    Args:
+        predictor: Trained TargetMovementPredictor model
+        test_data_path: Path to test data CSV file
+        output_path: Path to save predictions
+        prediction_duration: Duration to predict ahead in seconds
+    
+    Returns:
+        DataFrame with predictions
+    """
+    import pandas as pd
+    from tqdm import tqdm
+    
+    # Load test data
+    test_df = pd.read_csv(test_data_path)
+    
+    # Ensure datetime column is parsed
+    if 'datetime' in test_df.columns:
+        test_df['datetime'] = pd.to_datetime(test_df['datetime'])
+    
+    # Get unique target IDs
+    target_ids = test_df['target_id'].unique()
+    
+    # Create results dataframe
+    results = []
+    
+    print(f"Running inference on {len(target_ids)} targets...")
+    
+    # Process each target
+    for target_id in tqdm(target_ids):
+        # Get the latest observation for this target
+        target_data = test_df[test_df['target_id'] == target_id].sort_values('datetime')
+        
+        if len(target_data) < predictor.config['sequence_length']:
+            print(f"Warning: Not enough history for target {target_id}. Skipping.")
+            continue
+        
+        # Get the last observation time
+        last_seen_time = target_data['datetime'].iloc[-1]
+        
+        # Make prediction
+        prediction = predictor.predict_out_of_view(
+            test_df, 
+            target_id, 
+            last_seen_time,
+            prediction_duration
+        )
+        
+        if prediction is None:
+            print(f"Could not generate prediction for target {target_id}")
+            continue
+        
+        # Extract predicted coordinates and time points
+        for i, (time_point, mean_pos, lower_ci, upper_ci) in enumerate(zip(
+            prediction['time_points'], 
+            prediction['mean'], 
+            prediction['lower_ci'], 
+            prediction['upper_ci']
+        )):
+            results.append({
+                'target_id': target_id,
+                'prediction_step': i + 1,
+                'timestamp': time_point,
+                'predicted_longitude': mean_pos[0],
+                'predicted_latitude': mean_pos[1],
+                'longitude_lower_ci': lower_ci[0],
+                'longitude_upper_ci': upper_ci[0],
+                'latitude_lower_ci': lower_ci[1],
+                'latitude_upper_ci': upper_ci[1],
+                'last_seen_time': last_seen_time
+            })
+    
+    # Convert to DataFrame
+    results_df = pd.DataFrame(results)
+    
+    # Save results
+    results_df.to_csv(output_path, index=False)
+    
+    print(f"Predictions saved to {output_path}")
+    
+    return results_df
+
+if __name__ == "__main__":
+    main()
