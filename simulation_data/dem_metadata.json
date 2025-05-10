@@ -1,0 +1,13 @@
+{
+  "width": 1000,
+  "height": 1000,
+  "resolution": 30,
+  "crs": "EPSG:4326",
+  "bounds": [
+    0,
+    0,
+    30000,
+    30000
+  ],
+  "synthetic": true
+}

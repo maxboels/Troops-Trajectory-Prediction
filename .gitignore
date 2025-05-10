@@ -1,0 +1,15 @@
+battlefield/
+battlefield/*
+data/
+__pycache__/data/*.tif
+adapted_data/elevation_map.npy
+data/gm_lc_v3_1_1.tif
+__pycache__/*.cpython-312.pyc
+# Large files
+data/output_AW3D30.tif
+adapted_data/elevation_map.npy
+data/gm_lc_v3_1_1.tif
+
+# Add any other large files or patterns
+*.tif
+*.mp4

@@ -1,0 +1,23 @@
+{
+  "width": 1000,
+  "height": 1000,
+  "resolution": 30,
+  "crs": "EPSG:4326",
+  "bounds": [
+    0,
+    0,
+    30000,
+    30000
+  ],
+  "synthetic": true,
+  "classes": {
+    "0": "Water",
+    "1": "Urban",
+    "2": "Agricultural",
+    "3": "Forest",
+    "4": "Grassland",
+    "5": "Barren",
+    "6": "Wetland",
+    "7": "Snow/Ice"
+  }
+}
