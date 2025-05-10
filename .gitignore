@@ -13,3 +13,7 @@ data/gm_lc_v3_1_1.tif
 # Add any other large files or patterns
 *.tif
 *.mp4
+best_target_model.pt
+models/target_prediction/target_predictor_model.pt
+models/target_prediction/target_predictor_model.pt
+best_target_model.pt
