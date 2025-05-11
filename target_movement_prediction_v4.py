@@ -2139,6 +2139,7 @@ if __name__ == "__main__":
             plt.colorbar(label='Terrain Type')
             plt.title('Terrain Map')
             plt.savefig(os.path.join(args.output_dir, "terrain_map.png"), dpi=300)
+            print(f"Figure saved to {args.output_dir}/terrain_map.png")
         
         # Visualize elevation
         if data['elevation_data'] is not None:
@@ -2147,6 +2148,7 @@ if __name__ == "__main__":
             plt.colorbar(label='Elevation (m)')
             plt.title('Elevation Map')
             plt.savefig(os.path.join(args.output_dir, "elevation_map.png"), dpi=300)
+            print(f"Figure saved to {args.output_dir}/elevation_map.png")
         
         # Display target and blue force positions
         plt.figure(figsize=(12, 10))
@@ -2169,6 +2171,7 @@ if __name__ == "__main__":
         plt.legend()
         plt.grid(True)
         plt.savefig(os.path.join(args.output_dir, "positions_map.png"), dpi=300)
+        print(f"Figure saved to {args.output_dir}/positions_map.png")
         
         print(f"Visualizations saved to {args.output_dir}")
         

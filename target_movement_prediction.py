@@ -1,3 +1,488 @@
+def visualize_all_blue_red_movements(target_data, blue_force_data, terrain_data, elevation_data, output_path=None):
+    """
+    Create a detailed visualization of all forces and their movements on a terrain map.
+    
+    Args:
+        target_data: DataFrame with target observations (red forces)
+        blue_force_data: DataFrame with blue force locations
+        terrain_data: Terrain map as numpy array
+        elevation_data: Elevation map as numpy array
+        output_path: Path to save the visualization
+        
+    Returns:
+        Matplotlib figure
+    """
+    # Create figure
+    fig, ax = plt.subplots(figsize=(16, 14))
+    
+    # Get all unique timestamps
+    timestamps = sorted(pd.unique(target_data['datetime']))
+    
+    # Get coordinate bounds with padding
+    lon_min, lon_max = target_data['longitude'].min(), target_data['longitude'].max()
+    lat_min, lat_max = target_data['latitude'].min(), target_data['latitude'].max()
+    
+    # Add padding
+    lon_padding = (lon_max - lon_min) * 0.05
+    lat_padding = (lat_max - lat_min) * 0.05
+    lon_min -= lon_padding
+    lon_max += lon_padding
+    lat_min -= lat_padding
+    lat_max += lat_padding
+    
+    # Define colors for each land use category
+    land_use_colors = [
+        '#FFFFFF',  # 0: No data
+        '#1A5BAB',  # 1: Broadleaf Forest - dark blue-green
+        '#358221',  # 2: Deciduous Forest - green
+        '#2E8B57',  # 3: Evergreen Forest - sea green
+        '#52A72D',  # 4: Needleleaf Forest - light green
+        '#76B349',  # 5: Mixed Forest - medium green
+        '#90EE90',  # 6: Tree Open - light green
+        '#D2B48C',  # 7: Shrub - tan
+        '#9ACD32',  # 8: Herbaceous - yellow-green
+        '#ADFF2F',  # 9: Herbaceous with Sparse Tree/Shrub - green-yellow
+        '#F5DEB3',  # 10: Sparse vegetation - wheat
+        '#FFD700',  # 11: Cropland - gold
+        '#F4A460',  # 12: Agricultural - sandy brown
+        '#DAA520',  # 13: Cropland / Other Vegetation - goldenrod
+        '#2F4F4F',  # 14: Mangrove/Wetland - dark slate gray
+        '#00FFFF',  # 15: Wetland - cyan
+        '#A0522D',  # 16: Bare area - consolidated - sienna
+        '#DEB887',  # 17: Bare area - unconsolidated - burlywood
+        '#808080',  # 18: Urban - dark gray
+        '#FFFFFF',  # 19: Snow/Ice - white
+        '#0000FF',  # 20: Water - blue
+    ]
+    
+    terrain_cmap = ListedColormap(land_use_colors)
+    
+    # Add normalization for the correct range (0-20)
+    import matplotlib.colors as mcolors
+    norm = mcolors.Normalize(0, 20)
+    
+    # Plot terrain
+    if terrain_data is not None:
+        im = ax.imshow(terrain_data, cmap=terrain_cmap, norm=norm, alpha=0.7,
+                     extent=[lon_min, lon_max, lat_min, lat_max],
+                     aspect='auto', zorder=0)
+        
+        # Add elevation as a subtle overlay if available
+        if elevation_data is not None:
+            # Normalize elevation data
+            elev_min = np.min(elevation_data)
+            elev_max = np.max(elevation_data)
+            elev_norm = mcolors.Normalize(vmin=elev_min, vmax=elev_max)
+            
+            # Plot with low alpha
+            ax.imshow(elevation_data, cmap='terrain', norm=elev_norm, alpha=0.3,
+                     extent=[lon_min, lon_max, lat_min, lat_max],
+                     aspect='auto', zorder=1)
+        
+        # Add terrain legend
+        from matplotlib.patches import Patch
+        legend_elements = [
+            Patch(facecolor='#0000FF', label='Water'),
+            Patch(facecolor='#808080', label='Urban'),
+            Patch(facecolor='#358221', label='Forest'),
+            Patch(facecolor='#9ACD32', label='Herbaceous'),
+            Patch(facecolor='#FFD700', label='Cropland'),
+            Patch(facecolor='#00FFFF', label='Wetland')
+        ]
+        
+        # Create a separate legend for terrain
+        terrain_legend = ax.legend(handles=legend_elements, loc='upper left', 
+                                 title="Terrain Types", fontsize=10)
+        ax.add_artist(terrain_legend)
+    
+    # Plot blue force positions
+    if blue_force_data is not None:
+        ax.scatter(blue_force_data['longitude'], blue_force_data['latitude'],
+                 c='blue', s=120, marker='^', zorder=10, edgecolor='black')
+        
+        # Add labels for blue forces if 'name' column exists
+        if 'name' in blue_force_data.columns:
+            for _, row in blue_force_data.iterrows():
+                ax.annotate(row['name'],
+                          (row['longitude'], row['latitude']),
+                          xytext=(5, 5),
+                          textcoords="offset points",
+                          fontsize=9,
+                          color='blue',
+                          bbox=dict(facecolor='white', alpha=0.7, boxstyle='round'))
+    
+    # Target color map by class
+    target_colors = {
+        'tank': 'darkred',
+        'armoured personnel carrier': 'orangered',
+        'light vehicle': 'coral'
+    }
+    
+    # Create separate collections for each target class
+    target_collections = {}
+    
+    # Get unique target IDs
+    target_ids = target_data['target_id'].unique()
+    
+    # Plot trajectories for each target
+    for target_id in target_ids:
+        # Get data for this target
+        target_df = target_data[target_data['target_id'] == target_id].sort_values('datetime')
+        
+        # Get target class
+        target_class = target_df['target_class'].iloc[0] if 'target_class' in target_df.columns else 'Unknown'
+        color = target_colors.get(target_class, 'red')
+        
+        # Plot trajectory
+        line, = ax.plot(target_df['longitude'], target_df['latitude'], '-', 
+                      color=color, alpha=0.8, linewidth=2, zorder=3)
+        
+        # Add to collections
+        if target_class not in target_collections:
+            target_collections[target_class] = []
+        target_collections[target_class].append(line)
+        
+        # Mark last position
+        ax.scatter(target_df['longitude'].iloc[-1], target_df['latitude'].iloc[-1],
+                 c=color, s=80, marker='o', zorder=5, edgecolor='black')
+        
+        # Add target ID label
+        ax.annotate(target_id,
+                   (target_df['longitude'].iloc[-1], target_df['latitude'].iloc[-1]),
+                   xytext=(5, 5),
+                   textcoords="offset points",
+                   fontsize=9,
+                   color='black',
+                   bbox=dict(facecolor='white', alpha=0.7, edgecolor=color, boxstyle='round'))
+    
+    # Create legend handles
+    legend_handles = []
+    
+    # Add Blue Forces to legend
+    if blue_force_data is not None:
+        legend_handles.append(plt.Line2D([], [], color='blue', marker='^', 
+                                       markersize=10, linestyle='none',
+                                       label='Blue Forces', markeredgecolor='black'))
+    
+    # Add target classes to legend
+    for target_class, color in target_colors.items():
+        if target_class in target_collections:
+            legend_handles.append(plt.Line2D([], [], color=color, marker='o',
+                                           markersize=8, linestyle='-',
+                                           label=f'{target_class.title()}', 
+                                           markeredgecolor='black'))
+    
+    # Add legend
+    if legend_handles:
+        forces_legend = ax.legend(handles=legend_handles, loc='upper right', 
+                                title="Forces", fontsize=10)
+    
+    # Set title and labels
+    last_time = target_data['datetime'].max()
+    first_time = target_data['datetime'].min()
+    ax.set_title(f'Nova Scotia Battlefield - Force Movements\n'
+               f'Time Period: {first_time} to {last_time}',
+               fontsize=14)
+    ax.set_xlabel('Longitude', fontsize=12)
+    ax.set_ylabel('Latitude', fontsize=12)
+    
+    # Set axis limits
+    ax.set_xlim(lon_min, lon_max)
+    ax.set_ylim(lat_min, lat_max)
+    
+    # Add info box
+    info_text = (
+        f"Time Period: {first_time} to {last_time}\n"
+        f"Red Forces: {len(target_ids)}\n"
+        f"Blue Forces: {len(blue_force_data) if blue_force_data is not None else 0}\n"
+        f"Nova Scotia Battlefield"
+    )
+    ax.text(0.02, 0.02, info_text, transform=ax.transAxes, 
+           bbox=dict(facecolor='white', alpha=0.7, edgecolor='black'), fontsize=10)
+    
+    plt.tight_layout()
+    
+    # Save figure if path provided
+    if output_path is not None:
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        print(f"Battlefield visualization saved to {output_path}")
+    
+    return fig
+    
+    def visualize_prediction_with_terrain(self, target_data, target_id, timestamp, prediction_duration=300,
+                                   terrain_data=None, blue_force_data=None, output_path=None):
+        """
+        Create a detailed visualization of a single target's prediction with terrain map.
+        
+        Args:
+            target_data: DataFrame with target observations
+            target_id: ID of the target to predict
+            timestamp: Time point to start prediction from
+            prediction_duration: How long to predict ahead (seconds)
+            terrain_data: Terrain map (optional, uses self.terrain_data if None)
+            blue_force_data: Blue force locations DataFrame
+            output_path: Path to save the visualization
+            
+        Returns:
+            Matplotlib figure
+        """
+        # Ensure timestamp is datetime
+        if isinstance(timestamp, str):
+            timestamp = pd.to_datetime(timestamp)
+        
+        # Make prediction
+        prediction = self.predict_out_of_view(
+            target_data, 
+            target_id, 
+            timestamp,
+            prediction_duration
+        )
+        
+        if prediction is None:
+            print(f"Could not generate prediction for target {target_id}")
+            return None
+        
+        # Get data for this target
+        target_df = target_data[target_data['target_id'] == target_id].copy()
+        if 'datetime' in target_df.columns and target_df['datetime'].dtype == object:
+            target_df['datetime'] = pd.to_datetime(target_df['datetime'])
+        
+        # Get the target class
+        target_class = target_df['target_class'].iloc[0] if 'target_class' in target_df.columns else 'Unknown'
+        
+        # Choose color based on target class
+        target_colors = {
+            'tank': 'darkred',
+            'armoured personnel carrier': 'orangered',
+            'light vehicle': 'coral'
+        }
+        color = target_colors.get(target_class, 'red')
+        
+        # Filter history and future data
+        history = target_df[target_df['datetime'] <= timestamp]
+        
+        # Get end time for prediction
+        end_time = timestamp + timedelta(seconds=prediction_duration)
+        future = target_df[(target_df['datetime'] > timestamp) & (target_df['datetime'] <= end_time)]
+        has_future = len(future) > 0
+        
+        # Get prediction data
+        mean_traj = prediction['mean']
+        lower_ci = prediction['lower_ci']
+        upper_ci = prediction['upper_ci']
+        time_points = prediction['time_points']
+        
+        # Create figure with terrain map
+        fig, ax = plt.subplots(figsize=(14, 12))
+        
+        # Calculate bounds with padding
+        # Focus on the prediction area rather than the full dataset
+        x_points = np.concatenate([history['longitude'].values, mean_traj[:, 0]])
+        y_points = np.concatenate([history['latitude'].values, mean_traj[:, 1]])
+        
+        if has_future:
+            x_points = np.concatenate([x_points, future['longitude'].values])
+            y_points = np.concatenate([y_points, future['latitude'].values])
+        
+        if blue_force_data is not None:
+            # Include nearby blue forces
+            x_points = np.concatenate([x_points, blue_force_data['longitude'].values])
+            y_points = np.concatenate([y_points, blue_force_data['latitude'].values])
+        
+        lon_min, lon_max = np.min(x_points), np.max(x_points)
+        lat_min, lat_max = np.min(y_points), np.max(y_points)
+        
+        # Add more generous padding for better context
+        lon_padding = (lon_max - lon_min) * 0.15
+        lat_padding = (lat_max - lat_min) * 0.15
+        lon_min -= lon_padding
+        lon_max += lon_padding
+        lat_min -= lat_padding
+        lat_max += lat_padding
+        
+        # Use the provided terrain data or fall back to the instance's terrain data
+        terrain = terrain_data if terrain_data is not None else self.terrain_data
+        elevation = self.elevation_data
+        
+        if terrain is not None:
+            # Create colormap for terrain
+            land_use_colors = [
+                '#FFFFFF',  # 0: No data
+                '#1A5BAB',  # 1: Broadleaf Forest - dark blue-green
+                '#358221',  # 2: Deciduous Forest - green
+                '#2E8B57',  # 3: Evergreen Forest - sea green
+                '#52A72D',  # 4: Needleleaf Forest - light green
+                '#76B349',  # 5: Mixed Forest - medium green
+                '#90EE90',  # 6: Tree Open - light green
+                '#D2B48C',  # 7: Shrub - tan
+                '#9ACD32',  # 8: Herbaceous - yellow-green
+                '#ADFF2F',  # 9: Herbaceous with Sparse Tree/Shrub - green-yellow
+                '#F5DEB3',  # 10: Sparse vegetation - wheat
+                '#FFD700',  # 11: Cropland - gold
+                '#F4A460',  # 12: Agricultural - sandy brown
+                '#DAA520',  # 13: Cropland / Other Vegetation - goldenrod
+                '#2F4F4F',  # 14: Mangrove/Wetland - dark slate gray
+                '#00FFFF',  # 15: Wetland - cyan
+                '#A0522D',  # 16: Bare area - consolidated - sienna
+                '#DEB887',  # 17: Bare area - unconsolidated - burlywood
+                '#808080',  # 18: Urban - dark gray
+                '#FFFFFF',  # 19: Snow/Ice - white
+                '#0000FF',  # 20: Water - blue
+            ]
+            
+            terrain_cmap = ListedColormap(land_use_colors)
+            
+            # Add normalization for the correct range (0-20)
+            import matplotlib.colors as mcolors
+            norm = mcolors.Normalize(0, 20)
+            
+            # Plot terrain
+            im = ax.imshow(terrain, cmap=terrain_cmap, norm=norm, alpha=0.7,
+                         extent=[lon_min, lon_max, lat_min, lat_max],
+                         aspect='auto', zorder=0)
+            
+            # Add elevation as a subtle overlay if available
+            if elevation is not None:
+                # Normalize elevation data
+                elev_min = np.min(elevation)
+                elev_max = np.max(elevation)
+                elev_norm = mcolors.Normalize(vmin=elev_min, vmax=elev_max)
+                
+                # Plot with low alpha
+                ax.imshow(elevation, cmap='terrain', norm=elev_norm, alpha=0.3,
+                         extent=[lon_min, lon_max, lat_min, lat_max],
+                         aspect='auto', zorder=1)
+            
+            # Add terrain legend
+            from matplotlib.patches import Patch
+            legend_elements = [
+                Patch(facecolor='#0000FF', label='Water'),
+                Patch(facecolor='#808080', label='Urban'),
+                Patch(facecolor='#358221', label='Forest'),
+                Patch(facecolor='#9ACD32', label='Herbaceous'),
+                Patch(facecolor='#FFD700', label='Cropland'),
+                Patch(facecolor='#00FFFF', label='Wetland')
+            ]
+            
+            # Create a separate legend for terrain
+            terrain_legend = ax.legend(handles=legend_elements, loc='upper left', 
+                                     title="Terrain Types", fontsize=10)
+            ax.add_artist(terrain_legend)
+        else:
+            # If no terrain data, use a grid
+            ax.grid(True, linestyle='--', alpha=0.7, zorder=0)
+        
+        # Plot blue forces if provided
+        if blue_force_data is not None:
+            ax.scatter(blue_force_data['longitude'], blue_force_data['latitude'],
+                     c='blue', s=120, marker='^', label='Blue Forces', zorder=10, edgecolor='black')
+        
+        # Plot target history trajectory
+        ax.plot(history['longitude'], history['latitude'], '-', color=color, 
+               alpha=0.8, linewidth=2.5, zorder=3, label='Past Trajectory')
+        
+        # Mark last known position
+        ax.scatter(history['longitude'].iloc[-1], history['latitude'].iloc[-1], 
+                 c=color, s=100, marker='o', label='Last Known Position', zorder=5, edgecolor='black')
+        
+        # Plot predicted trajectory with confidence intervals
+        ax.plot(mean_traj[:, 0], mean_traj[:, 1], '--', color=color, 
+               linewidth=3, alpha=0.9, zorder=4, label='Predicted Trajectory')
+        
+        # Plot predicted positions
+        for i, (x, y, t) in enumerate(zip(mean_traj[:, 0], mean_traj[:, 1], time_points)):
+            # Only label some points to avoid clutter
+            if i % 2 == 0 or i == len(mean_traj) - 1:
+                ax.scatter(x, y, c=color, s=50, alpha=0.7, zorder=5, edgecolor='black')
+                # Add time labels
+                ax.annotate(t.strftime('%H:%M:%S'), 
+                          (x, y), 
+                          textcoords="offset points", 
+                          xytext=(0, 10), 
+                          ha='center',
+                          fontsize=9,
+                          bbox=dict(facecolor='white', alpha=0.7, boxstyle='round'))
+        
+        # Add final prediction point with special emphasis
+        ax.scatter(mean_traj[-1, 0], mean_traj[-1, 1], 
+                 c=color, s=120, marker='x', zorder=6, 
+                 label='Final Predicted Position', linewidth=2.5, edgecolor='black')
+        
+        # Plot confidence ellipses
+        for i in range(len(mean_traj)):
+            if i % 3 == 0 or i == len(mean_traj) - 1:  # Show fewer ellipses to reduce clutter
+                ellipse = Ellipse(
+                    (mean_traj[i, 0], mean_traj[i, 1]),
+                    width=upper_ci[i, 0] - lower_ci[i, 0],
+                    height=upper_ci[i, 1] - lower_ci[i, 1],
+                    color=color, alpha=0.25, zorder=2
+                )
+                ax.add_patch(ellipse)
+        
+        # Plot future trajectory if available
+        if has_future:
+            ax.plot(future['longitude'], future['latitude'], 'g-', 
+                   linewidth=2.5, zorder=3, label='Actual Future Trajectory')
+            ax.scatter(future['longitude'].iloc[-1], future['latitude'].iloc[-1],
+                     c='green', s=120, marker='*', zorder=6, 
+                     label='Actual Final Position', edgecolor='black')
+        
+        # Set title and labels
+        ax.set_title(f"{target_class.title()} '{target_id}' Movement Prediction\n"
+                   f"Starting at {timestamp} for {prediction_duration} seconds",
+                   fontsize=14)
+        ax.set_xlabel('Longitude', fontsize=12)
+        ax.set_ylabel('Latitude', fontsize=12)
+        
+        # Set axis limits
+        ax.set_xlim(lon_min, lon_max)
+        ax.set_ylim(lat_min, lat_max)
+        
+        # Add legend for trajectories
+        trajectory_handles = []
+        if blue_force_data is not None:
+            trajectory_handles.append(plt.Line2D([], [], color='blue', marker='^', 
+                                               markersize=10, linestyle='none',
+                                               label='Blue Forces', markeredgecolor='black'))
+        
+        trajectory_handles.extend([
+            plt.Line2D([], [], color=color, linestyle='-', linewidth=2.5, label='Past Trajectory'),
+            plt.Line2D([], [], color=color, linestyle='--', linewidth=2.5, label='Predicted Trajectory'),
+            plt.Line2D([], [], color=color, marker='o', markersize=8, linestyle='none', 
+                      label='Last Known Position', markeredgecolor='black'),
+            plt.Line2D([], [], color=color, marker='x', markersize=8, linestyle='none', 
+                      label='Predicted Final Position', markeredgewidth=2, markeredgecolor='black')
+        ])
+        
+        if has_future:
+            trajectory_handles.extend([
+                plt.Line2D([], [], color='green', linestyle='-', linewidth=2.5, label='Actual Future'),
+                plt.Line2D([], [], color='green', marker='*', markersize=10, linestyle='none', 
+                          label='Actual Final Position', markeredgecolor='black')
+            ])
+        
+        trajectory_legend = ax.legend(handles=trajectory_handles, loc='upper right', 
+                                    title=f"{target_class.title()} Trajectory", fontsize=10)
+        
+        # Add info box
+        info_text = (
+            f"Target: {target_id} ({target_class})\n"
+            f"Last seen: {timestamp}\n"
+            f"Prediction duration: {prediction_duration} seconds\n"
+            f"95% confidence intervals shown"
+        )
+        ax.text(0.02, 0.02, info_text, transform=ax.transAxes, 
+               bbox=dict(facecolor='white', alpha=0.7, edgecolor='black'), fontsize=10)
+        
+        plt.tight_layout()
+        
+        # Save figure if path provided
+        if output_path is not None:
+            plt.savefig(output_path, dpi=300, bbox_inches='tight')
+            print(f"Detailed prediction visualization saved to {output_path}")
+        
+        return fig
+
 """
 Target Movement Prediction - Predicting where targets will move when out of view
 Based on transformer architecture with terrain awareness
@@ -367,7 +852,7 @@ class TargetMovementPredictor:
             'dropout': 0.1,
             'learning_rate': 1e-4,
             'batch_size': 32,
-            'num_epochs': 2,
+            'num_epochs': 1,
             'sequence_length': 10,
             'prediction_horizon': 5,
             'terrain_feature_dim': 32,
@@ -1021,33 +1506,48 @@ class TargetMovementPredictor:
         }
     
     def save_model(self, filename):
-        """Save the model."""
-        save_dict = {
-            'model_state': self.model.state_dict(),
+        """Save the model weights and configuration separately."""
+        # Save model weights
+        weights_path = filename
+        torch.save(self.model.state_dict(), weights_path)
+        
+        # Save configuration and scalers
+        config_path = filename.replace('.pt', '_config.pkl')
+        config_dict = {
             'config': self.config,
             'input_scaler': self.input_scaler,
             'output_scaler': self.output_scaler
         }
         
-        torch.save(save_dict, filename)
-        print(f"Model saved to {filename}")
+        with open(config_path, 'wb') as f:
+            import pickle
+            pickle.dump(config_dict, f)
+        
+        print(f"Model weights saved to {weights_path}")
+        print(f"Model configuration saved to {config_path}")
     
     def load_model(self, filename):
-        """Load the model."""
+        """Load the model weights and configuration."""
         if not os.path.exists(filename):
             print(f"Model file {filename} not found")
             return False
         
         try:
-            # Load checkpoint
-            checkpoint = torch.load(filename, map_location=self.config['device'], weights_only=False)
+            # First load configuration
+            config_path = filename.replace('.pt', '_config.pkl')
+            if not os.path.exists(config_path):
+                print(f"Config file {config_path} not found")
+                return False
             
-            # Update config
-            self.config.update(checkpoint['config'])
+            # Load config and scalers
+            with open(config_path, 'rb') as f:
+                import pickle
+                config_dict = pickle.load(f)
             
-            # Load scalers
-            self.input_scaler = checkpoint['input_scaler']
-            self.output_scaler = checkpoint['output_scaler']
+            # Update attributes
+            self.config.update(config_dict['config'])
+            self.input_scaler = config_dict['input_scaler']
+            self.output_scaler = config_dict['output_scaler']
             
             # Initialize model if not already initialized
             if self.model is None:
@@ -1056,9 +1556,9 @@ class TargetMovementPredictor:
                 self.build_model(input_dim)
             
             # Load model weights
-            self.model.load_state_dict(checkpoint['model_state'])
+            self.model.load_state_dict(torch.load(filename, map_location=self.config['device']))
             
-            print(f"Model loaded from {filename}")
+            print(f"Model loaded from {filename} and {config_path}")
             return True
         except Exception as e:
             print(f"Error loading model: {e}")
@@ -1702,7 +2202,7 @@ if __name__ == "__main__":
         # Generate predictions
         predict_test_set(
             predictor,
-            os.path.join(args.data_dir, "red_sightings.csv"), # "test_data.csv"),
+            os.path.join(args.data_dir, "red_sightings.csv"),
             os.path.join(args.output_dir, "test_predictions.csv"),
             prediction_duration=args.prediction_duration
         )
