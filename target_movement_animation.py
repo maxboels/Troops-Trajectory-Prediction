@@ -441,9 +441,19 @@ def create_target_movement_animation(target_data_path, blue_force_path,
     print("Saving animation...")
     writer = FFMpegWriter(fps=fps, metadata=dict(artist='Target Movement Animation'), bitrate=3600)
     
-    with tqdm(total=100, desc="Encoding video") as pbar:
-        animation.save(output_file, writer=writer, dpi=dpi,
-                    progress_callback=lambda i, n: pbar.update(100/n))
+    save_format = "mp4"
+    if save_format == "mp4":
+        with tqdm(total=100, desc="Encoding video") as pbar:
+            animation.save(output_file, writer=writer, dpi=dpi,
+                        progress_callback=lambda i, n: pbar.update(100/n))
+    else:
+        # Save as gif if desired
+        gif_output_file = output_file.replace('.mp4', '.gif')
+        if os.path.exists(gif_output_file):
+            os.remove(gif_output_file)
+        print("Saving as GIF...")
+        animation.save(gif_output_file, writer='imagemagick', fps=fps, dpi=dpi)
+        print(f"GIF saved to {gif_output_file}")
     
     print(f"Animation saved to {output_file}")
     return animation
