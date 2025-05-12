@@ -2,7 +2,7 @@
 
 A geospatial analysis and machine learning system for predicting and visualizing target movements on a battlefield environment.
 
-![Target Movement Animation](/target_movement_animation.gif)
+![Target Movement Animation](visualizations/target_animation.gif)
 
 ## 📋 Project Overview
 
